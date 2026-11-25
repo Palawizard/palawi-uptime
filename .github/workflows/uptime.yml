@@ -1,0 +1,37 @@
+name: uptime
+# Checks the home-hosted services from outside. When the server, the internet box or the home
+# monitoring is down, the monitoring at home cannot send alerts: this job runs on GitHub instead.
+on:
+  schedule:
+    - cron: "7,37 * * * *"   # every 30 minutes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Sondes
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          set -u
+          check() {  # two tries, 60 s apart
+            for i in 1 2; do "$@" && return 0; [ $i = 1 ] && sleep 60; done; return 1; }
+          http() { code=$(curl -s -o /dev/null -m 20 -w '%{http_code}' "$1"); case "$code" in 2*|3*|401|403) return 0;; *) echo "$1 -> $code"; return 1;; esac; }
+          tcp() { timeout 10 bash -c "</dev/tcp/$1/$2" 2>/dev/null || { echo "$1:$2 injoignable"; return 1; }; }
+          fails=""
+          for u in https://palawi.fr/ https://palawi.fr/palacards/api/health https://auth.palawi.fr/-/health/live/ https://drive.palawi.fr/ https://mcp.palawi.fr/.well-known/oauth-protected-resource https://todo.palawi.fr/health https://affine.palawi.fr/info https://dash.palawi.fr/api/health; do
+            check http "$u" || fails="$fails\n- $u"
+          done
+          # RLCraft server (the Creative server on 25565 is stopped)
+          check tcp mc.palawi.fr 25567 || fails="$fails\n- mc.palawi.fr:25567"
+          if [ -n "$fails" ]; then
+            msg=$(printf ':rotating_light: **Surveillance externe (GitHub)** : injoignable depuis Internet%b\n(maison, box, PalaServer ou tunnel ?)' "$fails")
+            python3 -c 'import json,sys;print(json.dumps({"content":sys.argv[1][:1900]}))' "$msg" | curl -fsS -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"
+            exit 1
+          fi
+          echo "Tout repond."
